@@ -1,0 +1,63 @@
+name: infra checks
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - apps/backend/image.env
+      - apps/frontend/image.env
+  pull_request:
+  workflow_call:
+    inputs:
+      ref:
+        description: Revision to validate; deployments resolve main once and use the returned SHA
+        type: string
+        required: false
+        default: ''
+    outputs:
+      config_sha:
+        description: Exact infra revision that passed every check
+        value: ${{ jobs.validate.outputs.config_sha }}
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      config_sha: ${{ steps.revision.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || '' }}
+          persist-credentials: false
+      - name: Capture configuration revision
+        id: revision
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.21.0'
+      - name: Prepare pinned Caddy binary
+        run: |
+          CADDY_BIN="$RUNNER_TEMP/tijoratmarkazi-caddy"
+          docker run --rm --entrypoint /bin/cat \
+            caddy:2-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f \
+            /usr/bin/caddy > "$CADDY_BIN"
+          chmod 0555 "$CADDY_BIN"
+          echo "CADDY_BIN=$CADDY_BIN" >> "$GITHUB_ENV"
+      - name: Check runtime, Compose and deployment acknowledgements
+        run: node --test tests/runtime.test.mjs tests/compose.test.mjs tests/deployments.test.mjs
+      - name: Check and exercise deployment shell scripts
+        run: |
+          for script in scripts/*.sh tests/*.sh; do bash -n "$script"; done
+          for script in scripts/*.mjs; do node --check "$script"; done
+          bash tests/deploy.test.sh
+      - name: Validate Caddy configuration
+        env:
+          DOMAIN: example.test
+          ACME_EMAIL: ops@example.test
+        run: |
+          "$CADDY_BIN" validate --config Caddyfile --adapter caddyfile
+      - name: Verify proxy trust, routes and sensitive-log redaction
+        run: node --test tests/caddy.test.mjs
+      - name: Verify direct and proxied bootstrap DNS
+        run: node --test tests/bootstrap.test.mjs

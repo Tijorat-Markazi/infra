@@ -1,0 +1,84 @@
+name: deploy-frontend
+on:
+  push:
+    branches: [main]
+    paths: [apps/frontend/image.env]
+  workflow_dispatch:
+    inputs:
+      expected_image:
+        description: Exact release to recover; empty uses the triggering commit
+        type: string
+        default: ''
+      apply_shared:
+        description: Apply current config/runtime and recheck initialized applications
+        type: boolean
+        default: true
+permissions:
+  contents: read
+  packages: read
+  deployments: write
+concurrency:
+  group: prod-vps
+  cancel-in-progress: false
+  queue: max
+jobs:
+  validate:
+    name: Validate infra
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/checks.yml
+    with:
+      ref: main
+  deploy:
+    name: Deploy frontend
+    needs: validate
+    if: github.ref == 'refs/heads/main'
+    environment: prod
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out triggering commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.21.0'
+      - name: Capture requested image
+        id: requested
+        env:
+          EXPECTED_IMAGE: ${{ inputs.expected_image || '' }}
+        run: node scripts/snapshot.mjs frontend "$EXPECTED_IMAGE"
+      - name: Check out validated configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.config_sha }}
+          persist-credentials: false
+      - name: Deploy application
+        timeout-minutes: 14
+        env:
+          INFRA_BRANCH: main
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VALIDATED_CONFIG_SHA: ${{ needs.validate.outputs.config_sha }}
+          VPS_USERNAME: ${{ vars.VPS_USERNAME || 'deploy' }}
+          VPS_PORT: ${{ vars.VPS_PORT || '22' }}
+          DOMAIN: ${{ vars.DOMAIN }}
+          ACME_EMAIL: ${{ vars.ACME_EMAIL }}
+          POSTGRES_DB: ${{ vars.POSTGRES_DB || 'tijoratmarkazi' }}
+          POSTGRES_USER: ${{ vars.POSTGRES_USER || 'tijoratmarkazi' }}
+          WEB_CONCURRENCY: ${{ vars.WEB_CONCURRENCY || '1' }}
+          STARTUP_TIMEOUT: ${{ vars.STARTUP_TIMEOUT || '120' }}
+          DOC_TTL_DAYS: ${{ vars.DOC_TTL_DAYS || '14' }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
+          RAIS_TG_CHAT: ${{ vars.RAIS_TG_CHAT }}
+          GITHUB_TOKEN: ${{ github.token }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          RAIS_PASSWORD: ${{ secrets.RAIS_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          EXPECTED_IMAGE: ${{ steps.requested.outputs.image }}
+          APPLY_SHARED: ${{ github.event_name == 'workflow_dispatch' && inputs.apply_shared && 'true' || 'false' }}
+        run: node scripts/controller.mjs deploy frontend "$EXPECTED_IMAGE" "$APPLY_SHARED"
