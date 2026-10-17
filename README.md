@@ -12,7 +12,7 @@ frontend CI -> private GHCR -> apps/frontend/image.env -> deploy-frontend -> fro
 
 Review the public application source **and Git history** before first publication, including previously committed credentials, personal data, development accounts and database artifacts. Rotate exposed credentials; deleting a current file does not remove it from history. This implementation does not change repository visibility. Production runtime files, data and keys are never committed.
 
-The initial security review found **29 historical password findings** in backend `data/orgs.json`, commit `20cf52b0bb08f77bdce05d123132ed58d4247aff`. Current source scans are clean, but the full-history Gitleaks gate intentionally remains blocking. Rotate those credentials and prepare reviewed public history before enabling production releases. No findings have been suppressed and no Git history has been rewritten.
+The initial security review found **29 historical password findings** in backend `data/orgs.json`. On 17 October 2026, an approved history cleanup removed that file from all backend commits without changing current application files. [GitHub's full-history Gitleaks job passed](https://github.com/Tijorat-Markazi/backend/actions/runs/39050600778/job/117448218876) at cleaned commit `948f2b2ef0d75f155067c1ee9097eb08cb30d20a`, without suppressions or weaker scan settings. Rotate any exposed passwords still in use. Existing backend clones must be realigned or recloned after preserving local work; do not merge the removed history back.
 
 ## Layout and operation
 

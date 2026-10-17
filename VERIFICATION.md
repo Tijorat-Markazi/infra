@@ -17,7 +17,7 @@ Validated locally on 16 October 2026 using checksum-verified Node 24.21.0 and an
 | Trivy source vulnerabilities/misconfiguration/secrets | No high/critical findings in either application |
 | npm dependency audit | No reported vulnerabilities |
 
-Working-tree Gitleaks checks exclude only the ignored local verification-tool cache; CI retains the default full Git-history scan. Frontend history is clean. Backend history contains **29 password findings** in `data/orgs.json`, commit `20cf52b0bb08f77bdce05d123132ed58d4247aff`. The release gate remains intentionally blocked until credentials are rotated and public history is reviewed/remediated. No blanket ignore or history rewrite was introduced.
+Working-tree Gitleaks checks exclude only the ignored local verification-tool cache; CI retains the default full Git-history scan. Frontend history is clean. At this initial validation, backend history contained **29 password findings** in `data/orgs.json` and the release gate was blocked. The approved cleanup below subsequently resolved the full-history scan; no blanket ignore was introduced.
 
 The workflow uses GitHub's documented [`queue: max` concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency) and the [2026-03-10 workflow dispatch response](https://docs.github.com/en/rest/actions/workflows?apiVersion=2026-03-10#create-a-workflow-dispatch-event), which includes the exact run ID for recovery. These were checked against the official documentation during final review.
 
@@ -40,3 +40,9 @@ Adapted here with additional guarantees: validation and deploy/bootstrap are job
 | Actions and all Node/Bash deployment-script syntax | Passed; only the old actionlint `queue` compatibility exception remains |
 
 Docker's server API is currently unavailable locally; no image rebuild or real Ubuntu/VPS bootstrap was performed. Compose configuration and native Caddy checks passed without the Docker daemon. See [SETUP.md](SETUP.md) for the required migration of `VPS_HOST` from a variable to an infra/prod secret and exact first-release instructions. GitHub settings and YouthCapital were not modified.
+
+## Approved backend history cleanup — 17 October 2026
+
+Removed only historical `data/orgs.json` with checksum-verified git-filter-repo 2.47.0 in an isolated clone, then replaced backend/main using an exact force-with-lease after owner approval. All three backend commit IDs changed; old HEAD `78dc940` became `948f2b2ef0d75f155067c1ee9097eb08cb30d20a`. HEAD tree hashes match, so current application files are identical. The original local backend checkout was synchronized to the clean history.
+
+The cleaned history passes Gitleaks 8.30.1 locally with **zero findings**, and the [new GitHub Gitleaks job passed](https://github.com/Tijorat-Markazi/backend/actions/runs/39050600778/job/117448218876). Semgrep also passed in that run; subsequent pipeline stages were still running at this check. Password revocation/rotation and removal of cached old commit views or old copies are separate tasks; this cleanup does not prove either is complete.

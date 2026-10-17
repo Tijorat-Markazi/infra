@@ -4,7 +4,7 @@ This project uses Node for both applications. Follow these steps for a fresh Ubu
 
 ## 1. Prepare GitHub, DNS and the VPS
 
-Review source **and Git history** before making repositories public. Backend's full-history Gitleaks currently reports 29 password findings; rotate exposed credentials and prepare reviewed public history before releasing. Do not bypass that gate.
+Review source **and Git history** before making repositories public. The backend's historical `data/orgs.json` was removed from all commits in the approved 17 October 2026 cleanup, and full-history Gitleaks passes. Rotate any previously exposed passwords still in use. Preserve local work and realign or reclone old backend checkouts; do not merge the removed history back. Keep the full-history security gate enabled.
 
 Create `prod` environments in `Tijorat-Markazi/backend`, `frontend` and `infra`, with deployment branches restricted to `main`. Private repositories need an eligible plan for environment secrets. Push the reviewed infra implementation before application releases.
 
