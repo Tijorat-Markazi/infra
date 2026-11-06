@@ -3,8 +3,6 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-  packages: read
-  deployments: write
 concurrency:
   group: prod-vps
   cancel-in-progress: false
@@ -17,7 +15,7 @@ jobs:
     with:
       ref: main
   deploy:
-    name: Bootstrap Ubuntu server
+    name: Prepare project storage and maintenance
     needs: validate
     if: github.ref == 'refs/heads/main'
     environment: prod
@@ -36,6 +34,7 @@ jobs:
         run: |
           for script in scripts/*.sh; do bash -n "$script"; done
           for script in scripts/*.mjs; do node --check "$script"; done
+          for script in scripts/*.py; do python3 -m py_compile "$script"; done
       - name: Bootstrap server
         timeout-minutes: 29
         env:
@@ -45,9 +44,19 @@ jobs:
           VPS_USERNAME: ${{ vars.VPS_USERNAME || 'deploy' }}
           VPS_PORT: ${{ vars.VPS_PORT || '22' }}
           DOMAIN: ${{ vars.DOMAIN }}
-          ACME_EMAIL: ${{ vars.ACME_EMAIL }}
-          POSTGRES_DB: ${{ vars.POSTGRES_DB || 'tijoratmarkazi' }}
-          POSTGRES_USER: ${{ vars.POSTGRES_USER || 'tijoratmarkazi' }}
+          DB_HOST: ${{ vars.DB_HOST || 'postgres' }}
+          DB_PORT: ${{ vars.DB_PORT || '5432' }}
+          DB_NAME: ${{ vars.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          RAIS_PASSWORD: ${{ secrets.RAIS_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          DB_NETWORK: ${{ vars.DB_NETWORK || 'infrastructure_database' }}
+          DB_CONTAINER: ${{ vars.DB_CONTAINER || 'infrastructure-postgres-postgres-1' }}
+          PROXY_NETWORK: ${{ vars.PROXY_NETWORK || 'agrozanjir_web' }}
+          EDGE_PROXY_CONTAINER: ${{ vars.EDGE_PROXY_CONTAINER || 'agrozanjir-caddy-1' }}
           WEB_CONCURRENCY: ${{ vars.WEB_CONCURRENCY || '1' }}
           STARTUP_TIMEOUT: ${{ vars.STARTUP_TIMEOUT || '120' }}
           DOC_TTL_DAYS: ${{ vars.DOC_TTL_DAYS || '14' }}
@@ -56,9 +65,4 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
           VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
-          RAIS_PASSWORD: ${{ secrets.RAIS_PASSWORD }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: node scripts/controller.mjs bootstrap

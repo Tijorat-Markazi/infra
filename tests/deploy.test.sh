@@ -7,20 +7,24 @@ export TM_ROOT="$scratch/root with spaces"
 export TM_LOCK_HELD=1 TM_TIMEOUT_HELD=1
 export TEST_LOG="$scratch/docker.log" TEST_CURL_LOG="$scratch/curl.log" TEST_COMMAND_LOG="$scratch/commands.log"
 mkdir -p "$scratch/bin" "$TM_ROOT/apps/backend" "$TM_ROOT/apps/frontend"
-mkdir -p "$TM_ROOT/runtime"
+mkdir -p "$TM_ROOT/runtime" "$TM_ROOT/scripts"
+printf '# fixture: preflight is exercised separately\n' > "$TM_ROOT/scripts/preflight.py"
+printf 'DB_NETWORK=infrastructure_database\nPROXY_NETWORK=agrozanjir_web\n' > "$TM_ROOT/runtime/compose.env"
 printf 'DOMAIN=example.test\n' > "$TM_ROOT/runtime/caddy.env"
 cat > "$scratch/bin/docker" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >> "$TEST_LOG"
 printf '%q ' "$@" >> "$TEST_COMMAND_LOG"
 printf '\n' >> "$TEST_COMMAND_LOG"
-if [[ "${TEST_FAIL_SHARED:-}" == 1 && "$*" == *'postgres'* ]]; then exit 13; fi
+
 if [[ "${TEST_FAIL_PULL:-}" == 1 && "$*" == *'pull backend'* ]]; then exit 12; fi
 MOCK
 cat > "$scratch/bin/curl" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >> "$TEST_CURL_LOG"
-if [[ "$*" == *https://* ]]; then
+if [[ "$*" == *https://*/api/health/ready* && -n "${TEST_API_STATUS:-}" ]]; then
+  printf '%s' "$TEST_API_STATUS"
+elif [[ "$*" == *https://* ]]; then
   printf '%s' "${TEST_HTTPS_STATUS:-${TEST_HTTP_STATUS:-200}}"
 else
   printf '%s' "${TEST_HTTP_STATUS:-200}"
@@ -31,9 +35,10 @@ export PATH="$scratch/bin:$PATH"
 printf 'BACKEND_IMAGE=ghcr.io/tijorat-markazi/backend:backend-%040d-r1-123-a1@sha256:%064d\n' 0 0 > "$scratch/backend.env"
 bash "$repository/scripts/deploy.sh" backend "$scratch/backend.env"
 grep -q '^backend$' "$TEST_LOG"
-if grep -q '^frontend$' "$TEST_LOG"; then exit 1; fi
-grep -q 'up .*postgres' "$TEST_COMMAND_LOG"
+if grep -q '^tijoratmarkazi-frontend$' "$TEST_LOG"; then exit 1; fi
+if grep -q 'tijoratmarkazi-proxy\|postgres' "$TEST_COMMAND_LOG"; then exit 1; fi
 grep -Fq "$TM_ROOT/compose.yaml" "$TEST_LOG"
+if grep -q '^postgres$' "$TEST_LOG"; then exit 1; fi
 grep -q '^--no-deps$' "$TEST_LOG"
 if grep -q '^--remove-orphans$' "$TEST_LOG"; then exit 1; fi
 grep -q '/api/health/ready$' "$TEST_CURL_LOG"
@@ -59,16 +64,10 @@ if TEST_FAIL_PULL=1 bash "$repository/scripts/deploy.sh" backend "$scratch/backe
 fi
 if grep -q 'up .* backend ' "$TEST_COMMAND_LOG"; then exit 1; fi
 
-: > "$TEST_LOG"
-: > "$TEST_COMMAND_LOG"
-if TEST_FAIL_SHARED=1 bash "$repository/scripts/deploy.sh" backend "$scratch/backend.env"; then
-  echo 'Unhealthy dependencies were reported as deployment success.' >&2; exit 1
-fi
-if grep -q '^pull$' "$TEST_LOG"; then exit 1; fi
-
 printf 'FRONTEND_IMAGE=ghcr.io/tijorat-markazi/frontend:frontend-%040d-r2-456-a1@sha256:%064d\n' 0 0 > "$scratch/frontend.env"
 bash "$repository/scripts/deploy.sh" frontend "$scratch/frontend.env"
 grep -q '/healthz$' "$TEST_CURL_LOG"
+grep -Fxq 'http://127.0.0.1:8081/healthz' "$TEST_CURL_LOG"
 
 for response in 204 302; do
   if TEST_HTTP_STATUS="$response" bash "$repository/scripts/deploy.sh" frontend "$scratch/frontend.env"; then
@@ -78,6 +77,9 @@ done
 
 if TEST_HTTPS_STATUS=503 bash "$repository/scripts/deploy.sh" frontend "$scratch/frontend.env"; then
   echo 'Healthy container with failing Caddy route was accepted.' >&2; exit 1
+fi
+if TEST_API_STATUS=404 bash "$repository/scripts/deploy.sh" frontend "$scratch/frontend.env"; then
+  echo 'Static-only frontend was accepted with an initialized backend.' >&2; exit 1
 fi
 
 # Execute the actual nested SSH command against a disposable local bundle.
@@ -105,6 +107,34 @@ if bash -c "$command" <<< 'fixture-registry-token'; then
 fi
 test ! -s "$TEST_COMMAND_LOG"
 test ! -e "$stage"
+
+# Execute the real installation-only path used by bootstrap. Shared containers
+# and edge configuration must not be started, recreated or reloaded here.
+bundle="$scratch/bootstrap-bundle"
+mkdir -p "$bundle/scripts" "$bundle/runtime" "$bundle/apps/backend" "$bundle/apps/frontend"
+cp "$repository/compose.yaml" "$bundle/"
+cp "$repository/scripts/"*.sh "$repository/scripts/"*.py "$bundle/scripts/"
+for app in backend frontend; do cp "$repository/apps/$app/compose.yaml" "$bundle/apps/$app/"; done
+printf '# preflight has separate read-only Docker fixtures\n' > "$bundle/scripts/preflight.py"
+printf 'DOMAIN=example.test\nEDGE_PROXY_CONTAINER=fixture-edge\nDB_NETWORK=fixture-database\nPROXY_NETWORK=fixture-edge-network\n' > "$bundle/runtime/compose.env"
+printf 'DOMAIN=example.test\n' > "$bundle/runtime/caddy.env"
+printf 'DB_NAME=tijorat_markazi_db\n' > "$bundle/runtime/backend.env"
+printf '# rendered site\n' > "$bundle/runtime/edge-site.caddy"
+printf '# global filter\n' > "$bundle/runtime/edge-log-filter.caddy"
+cat > "$scratch/bin/chown" <<'MOCK'
+#!/usr/bin/env bash
+# Assert the selected ownership command without changing fixture identities.
+printf 'chown %s\n' "$*" >> "$TEST_COMMAND_LOG"
+MOCK
+chmod +x "$scratch/bin/chown"
+: > "$TEST_COMMAND_LOG"
+bash "$repository/scripts/apply-shared.sh" "$bundle" '' prepare-only
+if grep -Eq '(^| )up( |$)|reload|restart|network create|postgres' "$TEST_COMMAND_LOG"; then
+  echo 'Bootstrap preparation changed infrastructure or started containers.' >&2; exit 1
+fi
+grep -q '10001:10001' "$TEST_COMMAND_LOG"
+test -f "$TM_ROOT/runtime/backend.env"
+test -f "$TM_ROOT/scripts/restore.sh"
 
 # Exercise the real timeout wrapper on a short-lived fixture, not a ten-minute test.
 cat > "$scratch/timeout.sh" <<'SCRIPT'

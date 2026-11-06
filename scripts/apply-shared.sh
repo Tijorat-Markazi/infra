@@ -4,40 +4,35 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 tm_bounded 10m "$@"
 tm_lock
-bundle="${1:?Usage: apply-shared.sh bundle-directory}"
+bundle="${1:?Usage: apply-shared.sh bundle-directory [skip-app] [prepare-only]}"
 skip_app="${2:-}"
+mode="${3:-apply}"
+[[ "$mode" == apply || "$mode" == prepare-only ]] || exit 1
 
-# Validate before replacing the live Caddy configuration.
-domain="$(sed -n 's/^DOMAIN=//p' "$bundle/runtime/caddy.env")"
-email="$(sed -n 's/^ACME_EMAIL=//p' "$bundle/runtime/caddy.env")"
-DOMAIN="$domain" ACME_EMAIL="$email" caddy validate --config "$bundle/Caddyfile" --adapter caddyfile
+python3 "$bundle/scripts/preflight.py" "$bundle"
 
 install -d -m 0755 "$TM_ROOT" "$TM_ROOT/scripts" "$TM_ROOT/apps/backend" "$TM_ROOT/apps/frontend"
-install -d -m 0700 "$TM_ROOT/runtime"
+install -d -m 0700 "$TM_ROOT/runtime" "$TM_ROOT/backups"
 install -m 0644 "$bundle/compose.yaml" "$TM_ROOT/compose.yaml"
 for app in backend frontend; do
   install -m 0644 "$bundle/apps/$app/compose.yaml" "$TM_ROOT/apps/$app/compose.yaml"
 done
-for script in lib.sh deploy.sh apply-shared.sh bootstrap.sh; do
+for script in lib.sh deploy.sh apply-shared.sh bootstrap.sh preflight.py backup.py backup.sh restore.sh; do
   install -m 0755 "$bundle/scripts/$script" "$TM_ROOT/scripts/$script"
 done
-for runtime in postgres backend caddy; do
-  install -m 0600 "$bundle/runtime/$runtime.env" "$TM_ROOT/runtime/$runtime.env"
+for runtime in compose.env caddy.env edge-site.caddy edge-log-filter.caddy backend.env; do
+  if [[ -f "$bundle/runtime/$runtime" ]]; then
+    install -m 0600 "$bundle/runtime/$runtime" "$TM_ROOT/runtime/$runtime"
+  fi
 done
 install -d -m 0755 "$TM_ROOT/data"
 install -d -m 0700 "$TM_ROOT/data/backend" "$TM_ROOT/data/uploads"
-# Container IDs need not exist in the host's passwd/group databases.
 chown 10001:10001 "$TM_ROOT/data/backend" "$TM_ROOT/data/uploads"
-
-install -d -m 0755 /etc/systemd/system/caddy.service.d
-printf '[Service]\nEnvironmentFile=%s/runtime/caddy.env\n' "$TM_ROOT" > /etc/systemd/system/caddy.service.d/tijoratmarkazi.conf
-install -m 0644 "$bundle/Caddyfile" /etc/caddy/Caddyfile
-systemctl daemon-reload
-systemctl reload-or-restart caddy
 tm_compose shared config --quiet
-tm_compose shared up -d --wait --wait-timeout 120 postgres
+if [[ "$mode" == prepare-only ]]; then exit 0; fi
 
-# Configuration applies never copy either release file from an older snapshot.
+# Only initialized project applications are rechecked. The shared database and
+# edge proxy are never managed here; Nginx configuration travels in the image.
 for app in backend frontend; do
   [[ "$app" != "$skip_app" ]] || continue
   if [[ -f "$TM_ROOT/apps/$app/image.env" ]]; then
@@ -45,4 +40,4 @@ for app in backend frontend; do
     bash "$TM_ROOT/scripts/deploy.sh" "$app"
   fi
 done
-echo 'Shared configuration applied; initialized applications are healthy.'
+echo 'Project configuration applied; shared infrastructure unchanged.'

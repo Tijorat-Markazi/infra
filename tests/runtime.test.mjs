@@ -6,7 +6,7 @@ import path from 'node:path';
 import { renderRuntime, parseImage, verifyRelease } from '../scripts/runtime.mjs';
 import { createBundle, remoteCommand, sshSettings, verifyConfigRevision } from '../scripts/controller.mjs';
 
-export const fixture = { DOMAIN: 'example.test', ACME_EMAIL: 'ops@example.test',
+export const fixture = { DOMAIN: 'example.test', DB_HOST: 'postgres', DB_PORT: '5432', DB_NAME: 'tijorat_markazi_db', DB_USER: 'tijorat_markazi_user',
   POSTGRES_PASSWORD: `password-$#'"\\`.repeat(3), ADMIN_PASSWORD: 'admin-test-only-123456', RAIS_PASSWORD: 'rais-test-only-123456' };
 export const image = app => `ghcr.io/tijorat-markazi/${app}:${app}-${'a'.repeat(40)}-r2-123-a1@sha256:${'b'.repeat(64)}`;
 const manifest = app => `${app.toUpperCase()}_IMAGE=${image(app)}\n`;
@@ -19,17 +19,18 @@ test('server access requires the exact validated infra revision', () => {
   }
 });
 
-test('raw runtime files preserve punctuation and percent-encode DB credentials', () => {
+test('raw runtime files preserve application credentials and separate connection settings', () => {
   const files = renderRuntime(fixture);
-  assert.ok(files['postgres.env'].includes(`POSTGRES_PASSWORD=${fixture.POSTGRES_PASSWORD}\n`));
-  const url = files['backend.env'].match(/^DATABASE_URL=(.+)$/m)[1];
-  assert.equal(decodeURIComponent(new URL(url).password), fixture.POSTGRES_PASSWORD);
+  assert.equal(files['postgres.env'], undefined);
+  assert.ok(files['backend.env'].includes(`POSTGRES_PASSWORD=${fixture.POSTGRES_PASSWORD}\n`));
+  for (const name of ['DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER']) assert.ok(files['backend.env'].includes(`${name}=${fixture[name]}\n`));
+  assert.equal(files['backend.env'].includes('DATABASE_URL='), false);
   assert.ok(files['backend.env'].includes('WEB_CONCURRENCY=1\n'));
   assert.ok(files['backend.env'].includes('NEWS_FETCH=off\n'));
   assert.ok(files['backend.env'].includes('APP_ORIGIN=https://example.test\n'));
 });
 test('runtime rejects missing/weak secrets, line injection and unsafe worker count', () => {
-  for (const changes of [{ ADMIN_PASSWORD: '' }, { POSTGRES_PASSWORD: 'weak' }, { RAIS_PASSWORD: 'x\nBAD=yes' }, { DOMAIN: 'example.test;id' }, { WEB_CONCURRENCY: '2' }, { ANTHROPIC_API_KEY: 'test-key', ANTHROPIC_MODEL: '' }]) {
+  for (const changes of [{ ADMIN_PASSWORD: '' }, { DB_USER: '' }, { DB_NAME: '' }, { DB_USER: 'postgres' }, { DB_PORT: '65536' }, { DB_NETWORK: 'a;id' }, { POSTGRES_PASSWORD: 'weak' }, { RAIS_PASSWORD: 'x\nBAD=yes' }, { DOMAIN: 'example.test;id' }, { WEB_CONCURRENCY: '2' }, { ANTHROPIC_API_KEY: 'test-key', ANTHROPIC_MODEL: '' }]) {
     assert.throws(() => renderRuntime({ ...fixture, ...changes }));
   }
 });
@@ -47,7 +48,7 @@ test('normal bundle contains only targeted image; shared bundle contains no imag
       createBundle(directory, { mode: shared ? 'bootstrap' : 'deploy', app: 'backend', shared, env: fixture });
       assert.equal(existsSync(path.join(directory, 'apps/backend/image.env')), !shared);
       assert.equal(existsSync(path.join(directory, 'apps/frontend/image.env')), false);
-      assert.equal(existsSync(path.join(directory, 'runtime/backend.env')), shared);
+      assert.equal(existsSync(path.join(directory, 'runtime/backend.env')), true);
       assert.equal(existsSync(path.join(directory, 'compose.yaml')), shared);
     } finally { rmSync(directory, { recursive: true, force: true }); }
   }

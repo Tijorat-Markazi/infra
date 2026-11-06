@@ -1,132 +1,77 @@
-# First production deployment
+# Dedicated-server migration runbook
 
-This project uses Node for both applications. Follow these steps for a fresh Ubuntu VPS. Commands marked PowerShell run on your Windows laptop; bash commands run through your trusted server console/admin account. Replace placeholders before running a block.
+All commands changing GitHub, DNS, services or data below are **after explicit approval**. Preparation only inspected the shared host and changed local files. A short maintenance window is expected; no zero-downtime migration is promised.
 
-## 1. Prepare GitHub, DNS and the VPS
+## Confirmed target and prerequisites
 
-Review source **and Git history** before making repositories public. The backend's historical `data/orgs.json` was removed from all commits in the approved 17 October 2026 cleanup, and full-history Gitleaks passes. Rotate any previously exposed passwords still in use. Preserve local work and realign or reclone old backend checkouts; do not merge the removed history back. Keep the full-history security gate enabled.
+6 November 2026: `65.108.142.153`, deployment user `deploy`, shared PostgreSQL container `infrastructure-postgres-postgres-1`, network `infrastructure_database`, alias `postgres`, port 5432. Database `tijorat_markazi_db` is owned by `tijorat_markazi_user`, with schema USAGE/CREATE and no administrator privileges. The database is empty. No database/role creation or password rotation is necessary.
 
-Create `prod` environments in `Tijorat-Markazi/backend`, `frontend` and `infra`, with deployment branches restricted to `main`. Private repositories need an eligible plan for environment secrets. Push the reviewed infra implementation before application releases.
+AgroZanjir's Caddy owns host TCP 80/443 and UDP 443 on `agrozanjir_web`. Its current site is a different domain. This project has no Redis dependency and must not touch AgroZanjir Redis. YouthCapital owns host port 8080. This project binds only 127.0.0.1:8081 for frontend and 127.0.0.1:4321 for backend; both were free. No Tijorat Markazi Compose project, containers, networks or installed project root were present. WomanUP uses its own internal proxy; preserve all existing routes. The host has global IPv6 `2a01:4f9:1a:9280::2/64` with a default route; the existing edge listens on IPv4/IPv6 TCP 80/443 and UDP 443. The new server currently has **no certificate for tijoratmarkazi.uz**. The existing public site's HTTPS/readiness succeeds, which proves neither new-origin TLS nor the Cloudflare account's encryption setting.
 
-Use an amd64 Ubuntu 22.04/24.04/26.04 VPS with public IPv4 and IPv6. Configure domain A/AAAA origin records for those VPS addresses. Permit the actual SSH TCP port, TCP 80/443, UDP 443 and ICMP/ICMPv6 in the provider firewall. GitHub-hosted runners must be able to reach SSH.
+The owner confirmed there is no existing data to migrate. Start with the already-created empty target database; no old-server export, restore or database/role creation is required. Record the current Cloudflare A/AAAA origin values and proxy/TLS settings securely before cutover. Old-host retirement is a separate action after acceptance; do not delete its volumes during this migration.
 
-Cloudflare proxying may stay enabled. Set **Full (strict)** TLS, keep origin TCP 80 reachable, and allow `/.well-known/acme-challenge/*` through redirect/WAF rules. Leave Always Use HTTPS off during first certificate issuance. Public DNS can return Cloudflare addresses; bootstrap checks the origin certificate separately. Browser HTTP/3 through the proxy tests Cloudflare's edge; enable its HTTP/3 setting separately.
+## GitHub prod settings
 
-## 2. Create and install the deployment key
+Only **Tijorat-Markazi/infra -> prod** stores server/application runtime settings. Backend/frontend retain their existing GitHub App promotion credentials and `INFRA_REPO`, with no SSH/database credentials. In **each app/prod**, set variable `AUTO_DEPLOY=false` during migration; set it to `true` only after acceptance. Without it, pushes still build and scan images but cannot promote or clean up. Manual workflow dispatch with `publish_only=false` remains an explicit promotion action.
 
-PowerShell:
+| Type | Name | Value/action |
+| --- | --- | --- |
+| Secret | `VPS_HOST` | `65.108.142.153` |
+| Secret | `VPS_SSH_KEY` | Existing `hetzner_ax41_deploy_ed25519` private key, entered securely; do not print it |
+| Secret | `VPS_KNOWN_HOSTS` | Verified complete new-host key entry for that IP; verify through a trusted server console |
+| Secret | `DB_USER` | `tijorat_markazi_user` |
+| Secret | `POSTGRES_PASSWORD` | Already-created **application role** password, at least 24 characters; never the shared administrator password |
+| Secret | `ADMIN_PASSWORD`, `RAIS_PASSWORD` | Preserve existing application values, at least 16 characters |
+| Secret | `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN` | Preserve configured optional integrations |
+| Variable | `VPS_USERNAME`, `VPS_PORT` | `deploy`, `22` |
+| Variable | `DOMAIN` | `tijoratmarkazi.uz` |
+| Variable | `DB_HOST`, `DB_PORT` | `postgres`, `5432` |
+| Variable | `DB_NAME` | `tijorat_markazi_db` |
+| Variable | `DB_NETWORK` | `infrastructure_database` |
+| Variable | `DB_CONTAINER` | `infrastructure-postgres-postgres-1` |
+| Variable | `PROXY_NETWORK` | `agrozanjir_web` |
+| Variable | `EDGE_PROXY_CONTAINER` | `agrozanjir-caddy-1` |
+| Variable | `WEB_CONCURRENCY`, `STARTUP_TIMEOUT`, `DOC_TTL_DAYS` | `1`, `120`, `14` (preserve intentional overrides) |
+| Variable | `ANTHROPIC_MODEL`, `RAIS_TG_CHAT` | Preserve configured values; model required when the API key is present |
 
-```powershell
-$TmDeployKey = Join-Path $env:USERPROFILE '.ssh\tijoratmarkazi-deploy'
-New-Item -ItemType Directory -Force (Split-Path $TmDeployKey) | Out-Null
-if (Test-Path -LiteralPath $TmDeployKey) { throw 'Key already exists; reuse it or choose another filename.' }
-ssh-keygen -t ed25519 -f $TmDeployKey -C 'tijoratmarkazi-production'
-Get-Content -Raw "$TmDeployKey.pub" | Set-Clipboard
+Retire `POSTGRES_DB` and `POSTGRES_USER` variables; remove any old database-administrator secret after checking no unrelated workflow needs it. The established `POSTGRES_PASSWORD` name is deliberately preserved with the application-role meaning. `ACME_EMAIL` is no longer required by this project's frontend; certificate management belongs to the existing edge. No settings were changed during preparation: local GitHub CLI API authentication was rechecked on 6 November and is unavailable (HTTP 401).
+
+## Existing shared-edge security finding
+
+The running edge is Caddy 2.11.6 at digest `881bbc60f9986d5ab8e7cfd6cf7e4ef3c9c0439fef2429d035d065577882f028`. A refreshed 6 November scan of its exact image reports **1 CRITICAL and 10 HIGH vulnerability instances**, including Alpine libraries and embedded Go dependencies. This migration does not rebuild or replace shared infrastructure. Review remediation or explicit risk acceptance with the edge owner before public cutover; validate all existing sites if the shared image changes. Both local project runtime images pass the refreshed HIGH/CRITICAL scan after rebuilding the frontend runtime security packages. CI must repeat the scans for the immutable release images. Reports and validation limits are recorded in VERIFICATION.md.
+
+## Exact rollout order
+
+1. **Approve the reviewed changes and maintenance window.** Review remediation or explicit acceptance of the shared-edge image findings with its owner before public cutover. Set `AUTO_DEPLOY=false` in both application prod environments before pushing. Leave CI enabled: source scans, tests and publishing continue, while promotion/cleanup are gated. Manual releases must also wait for approval. Configure infra/prod with the new host and application role credentials. Preserve the old host settings in your secure operator records for rollback.
+2. **Push all three repositories after approval.** Infra code changes run validation only. Both backend connection configuration and frontend Nginx routing changed; both images must be rebuilt. Dispatch both application release workflows with `publish_only=true`; all tests/scans and the immutable image scan must pass. Do not promote either image yet. Do not push further application changes or dispatch normal releases until cutover. Confirm infra's GHCR Read access remains granted.
+3. **Dispatch infra `server bootstrap` on main.** Validation and bootstrap are in one run. It installs project runtime/scripts/storage and its backup timer, without starting/restarting containers or the backup timer, running migrations, or changing host settings. Its app runtime file is prepared for the initial empty-database startup. The enabled backup timer remains inactive until step 9. Inspect `/opt/tijoratmarkazi/runtime/edge-site.caddy` (contains no secrets).
+4. **Prepare the existing edge route for review.** `edge/agrozanjir-Caddyfile.patch` appends only this project site to the reference AgroZanjir infrastructure checkout; it was checked with `git apply --check` but not applied. Rebase it if the edge source changed, and use the freshly rendered site if DOMAIN differs. Append the rendered site's block to a candidate copy of `/opt/agrozanjir/Caddyfile`, preserving its current global block and all sites. Also mirror that addition in AgroZanjir's infrastructure source, otherwise a later AgroZanjir deployment will remove it. The live Caddyfile additionally contains WomanUP's route, which is absent from that local reference; reconcile it in the edge owner's source before any full-file replacement. Preserve the existing global log filter rather than adding a duplicate. Do not use that container's `{$DOMAIN}` for this project. Validate the full candidate using its existing Caddy binary. Its upstream is `tijoratmarkazi-frontend:8080` on the existing network; it will be unavailable until the new frontend starts. No Docker/Compose restart is needed to load a Caddyfile change: after approval, update the existing bind-mounted file **in place** and use `docker exec agrozanjir-caddy-1 caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile`. Preserve a copy of the previous file. If the edge default error logger records requests, retain the project's token/Referer filters there as described below.
+5. **Recheck empty target and isolation.** Read-only checks must still confirm database `tijorat_markazi_db`, owner/login `tijorat_markazi_user`, schema USAGE/CREATE, no elevated role privileges or memberships, and zero application tables. Confirm loopback 4321/8081 remain free and the project name is unused. If data appeared, stop for review; do not reset or delete it. Verify application-role password authentication securely before startup; never substitute an administrator password.
+6. **Skip data transfer for this fresh installation.** No source export or target restore is required. Keep the approved restore utility for future project-only recovery. Preserve the old host and all volumes until acceptance and a separate retirement decision.
+7. **Cut over this domain and obtain origin TLS.** Load the reviewed edge site, point only this domain's Cloudflare A record to `65.108.142.153`, and update/remove any stale origin AAAA record to `2a01:4f9:1a:9280::2` after verifying external reachability. Preserve host networking. Keep proxying enabled and **Full (strict)**. HTTP-01 must reach this edge's TCP 80 through Cloudflare without custom WAF/challenge/cache/redirect rules intercepting `/.well-known/acme-challenge/*`. The site explicitly disables TLS-ALPN-01, which cannot pass through Cloudflare. HTTP-01 issuance requires DNS to reach the new origin, so allow a brief maintenance/TLS-error window until issuance completes; it cannot be pre-issued with local `--resolve`. Do not downgrade TLS verification. If this window is unacceptable, stop and arrange DNS-01 issuance with the edge owner before cutover; the stock image has no Cloudflare DNS module.
+8. **Verify the origin certificate, then promote/deploy.** From the new server, `curl --noproxy '*' --connect-timeout 5 --max-time 15 --resolve 'tijoratmarkazi.uz:443:127.0.0.1' https://tijoratmarkazi.uz/ -o /dev/null` must pass certificate verification; an upstream 502 is expected before apps start (do not add `--fail` to this initial certificate-only check). Inspect certificate SAN/expiry and Caddy issuance logs. First dispatch a normal **frontend** release (`publish_only=false`), which promotes the new Nginx-aware frontend and waits for infra deployment. Frontend readiness does not require the backend, so this initializes routing safely. Then dispatch a normal **backend** release; its new DB-aware image starts against the confirmed empty database and waits for origin HTTPS readiness through Nginx. Backend startup creates/checks application tables, so this is the approved migration/startup point. The previous frontend image cannot route this architecture and must not be used for initial cutover. Enable automatic promotion only after both are healthy.
+9. **Verify and retain rollback material.** Check direct loopback app readiness, certificate-verified origin `/api/health/ready` and `/healthz`, public HTTPS, login, uploads and WebSockets. Check the other edge domain still works. Confirm the shared PostgreSQL container ID/start time and other projects' containers are unchanged. Run the scoped backup once and verify the archive listing plus off-host copy, then start only `sudo systemctl start tijoratmarkazi-backup.timer`. Verify its next run with `systemctl list-timers tijoratmarkazi-backup.timer`. Set both applications' prod/AUTO_DEPLOY variables to `true` only after acceptance. Cleanup remains conservative on failed/unknown deploys. Never remove the old database/volumes as part of this migration.
+
+Cloudflare [Full (strict)](https://developers.cloudflare.com/ssl/origin-configuration/ssl-modes/full-strict/) requires an unexpired, trusted certificate for the requested hostname. Caddy documents [HTTP-01 prerequisites](https://caddyserver.com/docs/automatic-https#acme-challenges) and [disabling TLS-ALPN-01](https://caddyserver.com/docs/caddyfile/directives/tls). Cloudflare's [Always Use HTTPS](https://developers.cloudflare.com/ssl/edge-certificates/additional-options/always-use-https/) currently documents HTTP DCV support; do not blanket-disable unrelated zone protections. Check custom redirects/WAF separately.
+
+### Edge log redaction
+
+Frontend access logs omit query strings; API upstream-error logs are suppressed to avoid unredactable tokens. Preserve the equivalent filter in the existing edge's global block to prevent an edge upstream failure logging download/reset tokens:
+
+```caddyfile
+log default {
+    format filter {
+        request>uri query {
+            delete t
+            delete token
+        }
+        request>headers>Referer delete
+    }
+}
 ```
 
-Use an empty passphrase for this dedicated automation key. Install only its `.pub` contents on the VPS. Keep the private file on your laptop for the GitHub secret.
+This is part of the reviewed edge change, not an automatic bootstrap action. Do not add a second global block or overwrite other logging configuration.
 
-From a trusted **root console** on the VPS:
+## Rollback
 
-```bash
-TM_PUBLIC_KEY='REPLACE_WITH_COMPLETE_SSH_ED25519_PUBLIC_KEY'
-id deploy >/dev/null 2>&1 || adduser --disabled-password --gecos '' deploy
-install -d -o deploy -g deploy -m 0700 /home/deploy/.ssh
-touch /home/deploy/.ssh/authorized_keys
-grep -qF -- "$TM_PUBLIC_KEY" /home/deploy/.ssh/authorized_keys || printf 'restrict %s\n' "$TM_PUBLIC_KEY" >> /home/deploy/.ssh/authorized_keys
-chown deploy:deploy /home/deploy/.ssh/authorized_keys
-chmod 0600 /home/deploy/.ssh/authorized_keys
-printf 'deploy ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/tijoratmarkazi-deploy
-chmod 0440 /etc/sudoers.d/tijoratmarkazi-deploy
-visudo -cf /etc/sudoers.d/tijoratmarkazi-deploy
-```
-
-Restrict that account to noninteractive key authentication:
-
-```bash
-cat > /etc/ssh/sshd_config.d/60-tijoratmarkazi-deploy.conf <<'SSH'
-Match User deploy
-    PasswordAuthentication no
-    KbdInteractiveAuthentication no
-    PermitTTY no
-    AllowTcpForwarding no
-    X11Forwarding no
-Match all
-SSH
-/usr/sbin/sshd -t && systemctl reload ssh
-sudo -n -u deploy sudo -n id -u
-```
-
-The final command must print `0`. Keep your console open while testing another SSH connection. This automation account has root-equivalent sudo privilege; the application containers use non-root users. Bootstrap connects as `deploy`, never root.
-
-## 3. Verify server host trust
-
-In the trusted VPS console:
-
-```bash
-ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
-TM_VPS_ADDRESS='REPLACE_WITH_VPS_IPV4'
-printf '%s ' "$TM_VPS_ADDRESS"
-cat /etc/ssh/ssh_host_ed25519_key.pub
-```
-
-Save the complete final line as `VPS_KNOWN_HOSTS`, for example `203.0.113.10 ssh-ed25519 AAAA...`. The fingerprint alone is insufficient. The initial address must exactly match `VPS_HOST`. For a custom SSH port, use `[address]:port`. Read the **public** host key, never the private host key, and do not trust an unverified `ssh-keyscan` result.
-
-PowerShell, using your real values:
-
-```powershell
-$TmVpsAddress = 'REPLACE_WITH_VPS_IPV4'
-$TmKnownHosts = Join-Path $env:USERPROFILE '.ssh\tijoratmarkazi_known_hosts'
-Set-Content -LiteralPath $TmKnownHosts -Encoding ascii -Value 'REPLACE_WITH_COMPLETE_VERIFIED_KNOWN_HOSTS_LINE'
-ssh -i $TmDeployKey -p 22 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$TmKnownHosts" "deploy@$TmVpsAddress" 'whoami; sudo -n id -u'
-```
-
-Expected output is `deploy`, then `0`, without a password prompt. Change port 22 consistently if using another SSH port. Do not bypass host-key checking after replacing a server; verify the new public host key through its trusted console.
-
-## 4. Configure infra/prod
-
-Add these **environment secrets** in [infra/prod](https://github.com/Tijorat-Markazi/infra/settings/environments):
-
-| Secret | Value |
-| --- | --- |
-| `VPS_HOST` | Real IP/hostname only. Move any existing `VPS_HOST` variable here and delete the old variable. |
-| `VPS_SSH_KEY` | Complete laptop private deployment key, including BEGIN/END lines. |
-| `VPS_KNOWN_HOSTS` | Complete trusted host-key line from step 3. |
-| `POSTGRES_PASSWORD` | Independent random password, at least 24 characters. |
-| `ADMIN_PASSWORD`, `RAIS_PASSWORD` | Independent random passwords, each at least 16 characters. |
-| `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN` | Optional existing integrations. |
-
-To copy the private client key on your laptop: `Get-Content -Raw $TmDeployKey | Set-Clipboard`. Paste it directly into GitHub's secret field.
-
-Add **environment variables** `VPS_USERNAME=deploy`, `VPS_PORT=22`, your lowercase `DOMAIN`, and your `ACME_EMAIL`. Set `POSTGRES_DB=tijoratmarkazi`, `POSTGRES_USER=tijoratmarkazi`, `WEB_CONCURRENCY=1`, `STARTUP_TIMEOUT=120`, `DOC_TTL_DAYS=14`. `ANTHROPIC_MODEL` is required only when its API key is configured; `RAIS_TG_CHAT` is optional. All runtime values must be single-line. See [production.env.example](production.env.example).
-
-Do not put GitHub App credentials in infra or VPS credentials in either app repo. GitHub automatically supplies `GITHUB_TOKEN`; do not create that secret yourself.
-
-## 5. Bootstrap and release
-
-Dispatch **infra → Actions → server bootstrap → Run workflow → main**. The single run shows **Validate infra → Bootstrap Ubuntu server**. Validation runs without production secrets; failure skips bootstrap. The bootstrap job uses only the exact validated commit, repeats script syntax checks, connects with your pinned SSH trust, then checks transferred shell scripts before installation.
-
-On a fresh VPS it installs Docker/Compose/Caddy, prepares private runtime/data directories, configures the firewall/QUIC buffers and starts PostgreSQL 18. No application image is required; missing application routes can return 502 until first release.
-
-Create a GitHub App installed on **Tijorat-Markazi/infra only**, with **Contents read/write**, **Actions read/write**, and **Deployments read** permissions. Generate its private key. In **each application's prod environment**, add secret `INFRA_APP_PRIVATE_KEY` and variables `INFRA_APP_ID` (App ID, not Client ID) and `INFRA_REPO=Tijorat-Markazi/infra`. Permit the App's automated image commits through any branch rules requiring PRs. It does not need Workflows or Deployments-write permission.
-
-For each application:
-
-1. Dispatch **CI and release** on `main` with `publish_only=true`. Wait for source scans, tests, image publishing and the image scan to pass.
-2. Open that GHCR package's **Manage Actions access**. Give **Tijorat-Markazi/infra Read** and verify its publishing repository has Admin.
-3. Dispatch a normal release with `publish_only=false`. It updates only its infra image file and waits for the matching infra deployment.
-4. Open the infra run: **Validate infra → Deploy backend/frontend** are jobs in that same run. A validation failure skips deploy and prevents app cleanup.
-
-Initial pushes containing empty image files can trigger rejected deploy runs; they make no VPS changes. Bootstrap and real application releases initialize the server independently.
-
-## Routine updates and recovery
-
-Normal app releases replace only their own container. For config or runtime-secret changes, dispatch an infra app workflow with `apply_shared=true` (default), leaving `expected_image` empty. For routine image recovery, use `apply_shared=false`. A failed app deploy-job retry reuses its existing candidate and dispatches recovery once; old runs cannot rewind a newer desired image.
-
-Failed, pending or unknown deployment outcomes prevent registry pruning. Current and previous distinct healthy images stay protected; use retained images for rollbacks. Under future storage limits, prepublish maintenance removes only unprotected versions when deployment state is confirmed healthy.
-
-Changing `POSTGRES_PASSWORD` in GitHub does not rotate an existing database role. Rotate it interactively with PostgreSQL's `\password`, then update the GitHub secret and apply shared config. Rotate an existing Rais account through an authenticated administrator action. Updating `ADMIN_PASSWORD` and applying shared config rotates administrator access.
-
-For a replacement server, prepare its account/key trust and DNS, update infra/prod's VPS settings, run bootstrap, then dispatch each app with `apply_shared=false` to pull retained releases. Moving existing database/uploads is a separate operator task.
-
-After deployment, check public IPv6 and HTTP/3 with `curl -6 -I https://<DOMAIN>` and an HTTP/3-capable `curl --http3-only -I https://<DOMAIN>`. Through Cloudflare these probe the edge. To probe origin QUIC directly, use `curl --http3-only --noproxy '*' --resolve '<DOMAIN>:443:<VPS_IPV4>' -I https://<DOMAIN>` with the real domain/IP. Keep backend, frontend and database ports private.
+Before accepting writes on the new app, stop only the new backend and restore this domain's previous DNS origin values/edge configuration; return to the old service only if it was healthy and only after approval. There is no source data to restore for this fresh installation. Keep the shared PostgreSQL service and all volumes untouched. After new writes have been accepted, freeze both sides and migrate this project's latest database/media back before redirecting traffic; pointing DNS back at a stale database loses writes. An image rollback does not undo database changes. Never run Compose `down -v`, PostgreSQL cluster restores, or host-wide pruning as recovery.

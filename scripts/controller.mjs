@@ -23,15 +23,15 @@ export function remoteCommand({ mode, app, shared, remote, port, actor }) {
   if (!['bootstrap', 'deploy'].includes(mode) || (mode === 'deploy' && !['backend', 'frontend'].includes(app))) throw new Error('Invalid deployment target');
   if (!/^\d+$/.test(String(port)) || Number(port) < 1 || Number(port) > 65535) throw new Error('Invalid SSH port');
   const login = `printf '%s' "$registry_token" | sudo -n timeout --signal=TERM --kill-after=15s 60s docker --config "$registry_config" login ghcr.io -u '${actor}' --password-stdin; `;
-  // A fresh VPS has no Docker yet and no initialized private app to pull.
-  const registry = mode === 'bootstrap' ? `if command -v docker >/dev/null 2>&1; then ${login}fi; ` : login;
-  const checkScripts = mode === 'bootstrap' || shared ? `for script in '${remote}/scripts/'*.sh; do bash -n "$script"; done; ` : '';
-  const prepare = `set -eu; cd '${remote}'; trap 'rm -rf "${remote}"' EXIT; tar -xzf bundle.tar.gz; ${checkScripts}registry_config=$(mktemp -d); trap 'rm -rf "$registry_config" "${remote}"' EXIT; IFS= read -r registry_token; ${registry}unset registry_token; `;
+  // Bootstrap only prepares project files. It never pulls or restarts containers.
+  const registry = mode === 'bootstrap' ? '' : `IFS= read -r registry_token; ${login}unset registry_token; `;
+  const checkScripts = mode === 'bootstrap' || shared ? `for script in '${remote}/scripts/'*.sh; do bash -n "$script"; done; for script in '${remote}/scripts/'*.py; do python3 -c 'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' "$script"; done; ` : '';
+  const prepare = `set -eu; cd '${remote}'; trap 'rm -rf "${remote}"' EXIT; tar -xzf bundle.tar.gz; ${checkScripts}registry_config=$(mktemp -d); trap 'rm -rf "$registry_config" "${remote}"' EXIT; ${registry}`;
   const commands = mode === 'bootstrap'
-    ? `bash '${remote}/scripts/bootstrap.sh' '${remote}' '${port}'`
-    : `${shared ? `bash '${remote}/scripts/apply-shared.sh' '${remote}' '${app}'; ` : ''}bash /opt/tijoratmarkazi/scripts/deploy.sh '${app}' '${remote}/apps/${app}/image.env'`;
+    ? `bash '${remote}/scripts/bootstrap.sh' '${remote}'`
+    : `${shared ? `bash '${remote}/scripts/apply-shared.sh' '${remote}' '${app}'; ` : ''}bash /opt/tijoratmarkazi/scripts/deploy.sh '${app}' '${remote}/apps/${app}/image.env' '${remote}/runtime/backend.env'`;
   // One root lock covers shared configuration AND the targeted app replacement.
-  const verify = shared || mode === 'bootstrap' ? `for name in backend frontend; do if test -f '${remote}/state/'"$name"; then expected=$(cat '${remote}/state/'"$name"); current=$(if test -f /opt/tijoratmarkazi/apps/"$name"/image.env; then sed -n "s/^$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')_IMAGE=//p" /opt/tijoratmarkazi/apps/"$name"/image.env; fi); if test "$expected" != "$current"; then echo 'Server release changed while waiting for lock; retry.' >&2; exit 1; fi; fi; done; ` : '';
+  const verify = mode === 'deploy' && shared ? `for name in backend frontend; do if test -f '${remote}/state/'"$name"; then expected=$(cat '${remote}/state/'"$name"); current=$(if test -f /opt/tijoratmarkazi/apps/"$name"/image.env; then sed -n "s/^$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')_IMAGE=//p" /opt/tijoratmarkazi/apps/"$name"/image.env; fi); if test "$expected" != "$current"; then echo 'Server release changed while waiting for lock; retry.' >&2; exit 1; fi; fi; done; ` : '';
   const locked = `set -euo pipefail; exec 9>/run/lock/tijoratmarkazi.lock; flock -w 60 9; export TM_LOCK_HELD=1; ${verify}${commands}`;
   const operation = `sudo -n env DOCKER_CONFIG="$registry_config" timeout --signal=TERM --kill-after=15s ${mode === 'bootstrap' ? '25m' : '11m'} bash -c ${shellQuote(locked)}`;
   return `timeout --signal=TERM --kill-after=15s ${mode === 'bootstrap' ? '28m' : '12m'} bash -c ${shellQuote(prepare + operation)}`;
@@ -99,9 +99,9 @@ export function sshSettings(env, directory) {
 export function createBundle(directory, { mode, app, shared, snapshots = {}, env = process.env }) {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   if (shared || mode === 'bootstrap') {
-    for (const filename of ['compose.yaml', 'Caddyfile']) copyFileSync(path.join(repositoryRoot, filename), path.join(directory, filename));
+    for (const filename of ['compose.yaml']) copyFileSync(path.join(repositoryRoot, filename), path.join(directory, filename));
     mkdirSync(path.join(directory, 'scripts'), { recursive: true });
-    for (const filename of ['lib.sh', 'deploy.sh', 'apply-shared.sh', 'bootstrap.sh']) {
+    for (const filename of ['lib.sh', 'deploy.sh', 'apply-shared.sh', 'bootstrap.sh', 'preflight.py', 'backup.py', 'backup.sh', 'restore.sh']) {
       copyFileSync(path.join(repositoryRoot, 'scripts', filename), path.join(directory, 'scripts', filename));
     }
     for (const name of ['backend', 'frontend']) {
@@ -119,6 +119,7 @@ export function createBundle(directory, { mode, app, shared, snapshots = {}, env
   if (mode === 'deploy') {
     mkdirSync(path.join(directory, 'apps', app), { recursive: true });
     copyFileSync(path.join(repositoryRoot, 'apps', app, 'image.env'), path.join(directory, 'apps', app, 'image.env'));
+    if (app === 'backend' && !shared) writeRuntime(path.join(directory, 'runtime'), env);
   }
 }
 
@@ -144,7 +145,7 @@ export async function main(args, env = process.env) {
     settings = sshSettings(env, directory);
     // Read initialized sibling releases before any server changes. Shared applies
     // recheck all initialized apps; each gets its own conservative attempt record.
-    if (shared || mode === 'bootstrap') {
+    if (mode === 'deploy' && shared) {
       for (const name of APPS) {
         if (mode === 'deploy' && name === app) continue;
         const existing = run('ssh', [...settings.ssh, `if test -f /opt/tijoratmarkazi/apps/${name}/image.env; then cat /opt/tijoratmarkazi/apps/${name}/image.env; fi`], { capture: true, timeout: 30_000 });
@@ -170,7 +171,7 @@ export async function main(args, env = process.env) {
     // The token travels only through encrypted stdin, never argv or a saved shell script.
     // Entire command is bounded, including registry authentication and shared updates.
     run('ssh', [...settings.ssh, remoteCommand({ mode, app, shared, remote, port: settings.port, actor })], {
-      input: `${env.GITHUB_TOKEN}\n`, timeout: mode === 'bootstrap' ? 29 * 60_000 : 13 * 60_000,
+      input: mode === 'bootstrap' ? '' : `${env.GITHUB_TOKEN}\n`, timeout: mode === 'bootstrap' ? 29 * 60_000 : 13 * 60_000,
     });
     api.deadline = Date.now() + 2 * 60_000;
     for (const id of records) await api.status(id, 'success');

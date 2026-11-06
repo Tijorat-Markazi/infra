@@ -12,14 +12,15 @@ services:
         format: raw
     ports:
       - "127.0.0.1:4321:4321"
-    networks: [backendnet]
+    networks:
+      backendnet:
+        aliases: [tijoratmarkazi-backend-upstream]
+      database: {}
     volumes:
       - ./data/backend:/app/data
       - ./data/uploads:/app/uploads
     tmpfs:
       - /tmp:size=32m,mode=1777,nosuid,noexec
-    depends_on:
-      postgres: {condition: service_healthy}
     healthcheck:
       test:
         - CMD

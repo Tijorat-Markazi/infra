@@ -1,0 +1,9 @@
+log default {
+	format filter {
+		request>uri query {
+			delete t
+			delete token
+		}
+		request>headers>Referer delete
+	}
+}

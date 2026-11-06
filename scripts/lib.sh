@@ -25,11 +25,19 @@ tm_bounded() {
 tm_compose() {
   local app="$1"
   shift
-  local command=(docker compose -p tijoratmarkazi -f "$TM_ROOT/compose.yaml")
+  local command=(docker compose -p tijoratmarkazi --env-file "$TM_ROOT/runtime/compose.env" -f "$TM_ROOT/compose.yaml")
   if [[ "$app" != shared ]]; then
     command+=(-f "$TM_ROOT/apps/$app/compose.yaml" --env-file "$TM_ROOT/apps/$app/image.env")
   fi
   "${command[@]}" "$@"
+}
+
+tm_service() {
+  case "$1" in
+    backend) printf backend ;;
+    frontend) printf tijoratmarkazi-frontend ;;
+    *) return 1 ;;
+  esac
 }
 
 tm_image() {

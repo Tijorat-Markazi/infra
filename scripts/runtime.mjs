@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 
 export const OWNER = 'tijorat-markazi';
 export const APPS = ['backend', 'frontend'];
@@ -23,19 +23,36 @@ export function envFile(values) {
 export function renderRuntime(env) {
   const domain = required(env, 'DOMAIN');
   if (!/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(domain)) throw new Error('DOMAIN must be a lowercase hostname');
-  const email = required(env, 'ACME_EMAIL');
-  if (!/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(email)) throw new Error('Invalid ACME_EMAIL');
-  const db = scalar('POSTGRES_DB', env.POSTGRES_DB || 'tijoratmarkazi');
-  const user = scalar('POSTGRES_USER', env.POSTGRES_USER || 'tijoratmarkazi');
-  if (![db, user].every(value => /^[a-z_][a-z0-9_]{0,62}$/.test(value))) throw new Error('Invalid Postgres database/user');
+  const resource = (key, fallback) => {
+    const value = scalar(key, env[key] || fallback);
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(value)) throw new Error(`Invalid ${key}`);
+    return value;
+  };
+  const infrastructure = {
+    DOMAIN: domain,
+    DB_NETWORK: resource('DB_NETWORK', 'infrastructure_database'),
+    PROXY_NETWORK: resource('PROXY_NETWORK', 'agrozanjir_web'),
+    DB_CONTAINER: resource('DB_CONTAINER', 'infrastructure-postgres-postgres-1'),
+    EDGE_PROXY_CONTAINER: resource('EDGE_PROXY_CONTAINER', 'agrozanjir-caddy-1'),
+  };
+  const files = {
+    'compose.env': envFile(infrastructure),
+    'caddy.env': envFile({ DOMAIN: domain }),
+    'edge-log-filter.caddy': readFileSync(new URL('../edge-log-filter.caddy', import.meta.url), 'utf8'),
+    'edge-site.caddy': readFileSync(new URL('../Caddyfile', import.meta.url), 'utf8').replaceAll('{$DOMAIN}', domain),
+  };
+  const db = required(env, 'DB_NAME');
+  const user = required(env, 'DB_USER');
+  if (![db, user].every(value => /^[a-z_][a-z0-9_]{0,62}$/.test(value)) || user === 'postgres' || db === 'postgres') throw new Error('Use a dedicated application database and role');
+  const host = resource('DB_HOST', 'postgres');
+  const port = integer(env, 'DB_PORT', '5432', 1, 65535);
   const password = required(env, 'POSTGRES_PASSWORD', 24);
   if (String(env.WEB_CONCURRENCY || '1') !== '1') throw new Error('This backend requires WEB_CONCURRENCY=1');
   if (env.ANTHROPIC_API_KEY && !env.ANTHROPIC_MODEL) throw new Error('ANTHROPIC_MODEL is required when ANTHROPIC_API_KEY is configured');
   return {
-    'postgres.env': envFile({ POSTGRES_DB: db, POSTGRES_USER: user, POSTGRES_PASSWORD: password }),
-    'caddy.env': envFile({ DOMAIN: domain, ACME_EMAIL: email }),
+    ...files,
     'backend.env': envFile({ NODE_ENV: 'production', PORT: '4321', APP_ORIGIN: `https://${domain}`,
-      DATABASE_URL: `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@postgres:5432/${encodeURIComponent(db)}`,
+      DB_HOST: host, DB_PORT: port, DB_NAME: db, DB_USER: user, POSTGRES_PASSWORD: password,
       ADMIN_PASSWORD: required(env, 'ADMIN_PASSWORD', 16), RAIS_PASSWORD: required(env, 'RAIS_PASSWORD', 16),
       WEB_CONCURRENCY: '1', STARTUP_TIMEOUT: integer(env, 'STARTUP_TIMEOUT', '120', 30, 300),
       DOC_TTL_DAYS: integer(env, 'DOC_TTL_DAYS', '14', 1, 365), NEWS_FETCH: 'off', TZ: 'Asia/Tashkent',

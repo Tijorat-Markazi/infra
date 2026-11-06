@@ -63,9 +63,14 @@ jobs:
           VPS_USERNAME: ${{ vars.VPS_USERNAME || 'deploy' }}
           VPS_PORT: ${{ vars.VPS_PORT || '22' }}
           DOMAIN: ${{ vars.DOMAIN }}
-          ACME_EMAIL: ${{ vars.ACME_EMAIL }}
-          POSTGRES_DB: ${{ vars.POSTGRES_DB || 'tijoratmarkazi' }}
-          POSTGRES_USER: ${{ vars.POSTGRES_USER || 'tijoratmarkazi' }}
+          DB_HOST: ${{ vars.DB_HOST || 'postgres' }}
+          DB_PORT: ${{ vars.DB_PORT || '5432' }}
+          DB_NAME: ${{ vars.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_NETWORK: ${{ vars.DB_NETWORK || 'infrastructure_database' }}
+          DB_CONTAINER: ${{ vars.DB_CONTAINER || 'infrastructure-postgres-postgres-1' }}
+          PROXY_NETWORK: ${{ vars.PROXY_NETWORK || 'agrozanjir_web' }}
+          EDGE_PROXY_CONTAINER: ${{ vars.EDGE_PROXY_CONTAINER || 'agrozanjir-caddy-1' }}
           WEB_CONCURRENCY: ${{ vars.WEB_CONCURRENCY || '1' }}
           STARTUP_TIMEOUT: ${{ vars.STARTUP_TIMEOUT || '120' }}
           DOC_TTL_DAYS: ${{ vars.DOC_TTL_DAYS || '14' }}

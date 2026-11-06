@@ -50,7 +50,9 @@ jobs:
         run: |
           for script in scripts/*.sh tests/*.sh; do bash -n "$script"; done
           for script in scripts/*.mjs; do node --check "$script"; done
+          shellcheck -x scripts/*.sh tests/*.sh
           bash tests/deploy.test.sh
+          python3 -m unittest discover -s tests -p '*_test.py'
       - name: Validate Caddy configuration
         env:
           DOMAIN: example.test
@@ -58,6 +60,6 @@ jobs:
         run: |
           "$CADDY_BIN" validate --config Caddyfile --adapter caddyfile
       - name: Verify proxy trust, routes and sensitive-log redaction
-        run: node --test tests/caddy.test.mjs
-      - name: Verify direct and proxied bootstrap DNS
+        run: node --test tests/edge.test.mjs
+      - name: Verify shared-host bootstrap and workflow safeguards
         run: node --test tests/bootstrap.test.mjs

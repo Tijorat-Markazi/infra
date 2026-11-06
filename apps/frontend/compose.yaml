@@ -1,5 +1,5 @@
 services:
-  frontend:
+  tijoratmarkazi-frontend:
     image: ${FRONTEND_IMAGE:?Publish a frontend image before deploying frontend}
     user: "101:101"
     restart: unless-stopped
@@ -7,8 +7,8 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     ports:
-      - "127.0.0.1:8080:8080"
-    networks: [frontendnet]
+      - "127.0.0.1:8081:8080"
+    networks: [backendnet, edge]
     tmpfs:
       - /tmp:size=16m,mode=1777,nosuid,noexec
     healthcheck:
